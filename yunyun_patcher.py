@@ -14,6 +14,8 @@ Run order (all handled automatically):
 Dependencies: UnityPy  (pip install unitypy)
 Place alongside your strings.json and lang_strings.json.
 """
+# Auto-detection logic based on suggestion by 946923759
+# https://github.com/NickPlayzGITHUB/CrossPatch/blob/main/src/Config.py
 
 # ── Inline: smartformattag_patch ──────────────────────────────────────────────
 # Monkey-patch for UnityPy TypeTreeHelper to handle unknown ManagedReference
@@ -101,14 +103,53 @@ def save_config(cfg):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
+STEAM_APP_ID = "2914150"
+
+def find_game_in_steam():
+    """Try to auto-detect the game install path via Steam registry and libraryfolders.vdf."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            steam_path = winreg.QueryValueEx(key, "SteamPath")[0]
+    except Exception:
+        return None
+
+    library_paths = [steam_path]
+    vdf = Path(steam_path) / "steamapps" / "libraryfolders.vdf"
+    if vdf.exists():
+        try:
+            text = vdf.read_text(encoding="utf-8")
+            for match in re.finditer(r'"path"\s+"([^"]+)"', text):
+                library_paths.append(match.group(1).replace("\\\\", "\\"))
+        except Exception:
+            pass
+
+    manifest_file = f"appmanifest_{STEAM_APP_ID}.acf"
+    for lib in library_paths:
+        manifest = Path(lib) / "steamapps" / manifest_file
+        if manifest.exists():
+            try:
+                text = manifest.read_text(encoding="utf-8")
+                m = re.search(r'"installdir"\s+"([^"]+)"', text)
+                if m:
+                    game_path = Path(lib) / "steamapps" / "common" / m.group(1)
+                    if game_path.exists():
+                        print(f"  Auto-detected game at: {game_path}")
+                        return game_path
+            except Exception:
+                pass
+    return None
+
+
 def ask_game_dir():
     root = tk.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
     messagebox.showinfo(
         "Yunyun Syndrome Patcher",
-        "Please select your Yunyun Syndrome install folder.\n\n"
-        "This is usually:\n"
+        "Could not auto-detect your Yunyun Syndrome install folder.\n\n"
+        "Please select it manually.\n"
+        "It is usually:\n"
         "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Yunyun_Syndrome"
     )
     folder = filedialog.askdirectory(title="Select Yunyun Syndrome install folder")
@@ -125,7 +166,16 @@ def get_game_dir():
         if game_dir.exists():
             return game_dir
         print(f"  Saved path no longer exists: {game_dir}")
-    print("  Game install path not set — asking user...")
+
+    # Try auto-detection first
+    game_dir = find_game_in_steam()
+    if game_dir:
+        cfg["game_dir"] = str(game_dir)
+        save_config(cfg)
+        return game_dir
+
+    # Fall back to manual picker
+    print("  Could not auto-detect game path — asking user...")
     game_dir = ask_game_dir()
     cfg["game_dir"] = str(game_dir)
     save_config(cfg)
