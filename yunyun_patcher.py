@@ -407,11 +407,60 @@ def step_lang():
 # ── Step 3: CRC patch ─────────────────────────────────────────────────────────
 
 # The patched bundle always produces this CRC — hardcoded since it's deterministic.
-PATCHED_BUNDLE_CRC = 0xae6e4fae
+CRC_CACHE_FILE = Path(sys.executable).parent / "yunyun_crc.dat"
+
+def load_cached_crc():
+    if CRC_CACHE_FILE.exists():
+        try:
+            return int(CRC_CACHE_FILE.read_text().strip(), 16)
+        except Exception:
+            pass
+    return None
+
+def save_cached_crc(crc: int):
+    CRC_CACHE_FILE.write_text(hex(crc))
 
 def step_crc():
     print("\n=== Step 3: CRC catalog patch ===")
-    patch_catalog(PATCHED_BUNDLE_CRC)
+
+    log_path = find_log()
+
+    # Check if we have a cached CRC from a previous run
+    cached = load_cached_crc()
+    if cached:
+        print(f"  Using cached CRC: {hex(cached)}")
+        patch_catalog(cached)
+        return
+
+    # No cache — need to launch the game to get the CRC
+    if log_path.exists():
+        try:
+            log_path.unlink()
+        except OSError:
+            pass
+
+    print("  Launching game to capture CRC...")
+    if not launch_game():
+        print("  Could not launch game. Patch catalog.bin manually.")
+        return
+
+    print("  Waiting for CRC mismatch (up to 120 seconds)...")
+    print("  The game will be closed automatically once the CRC is captured.")
+    result = watch_log_for_crc(log_path, timeout=120)
+
+    if result:
+        provided, calculated = result
+        print(f"\n  CRC captured — provided={hex(provided)} calculated={hex(calculated)}")
+        print("  Closing game...")
+        kill_game()
+        time.sleep(2)
+        patch_catalog(calculated)
+        save_cached_crc(calculated)
+        print(f"  CRC saved to cache.")
+    else:
+        print("\n  Failed to capture CRC automatically.")
+        print("  Launch the game manually, let it reach the title screen,")
+        print("  then run the patcher again.")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
