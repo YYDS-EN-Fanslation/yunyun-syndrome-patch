@@ -2,7 +2,11 @@
 
 An English fan translation patch for **Yunyun Syndrome!? Rhythm Psychosis**, packaged as a one-click patcher.
 
-[![Watch the video](https://img.youtube.com/vi/Jxt7X63N10w/maxresdefault.jpg)](https://youtu.be/Jxt7X63N10w)
+<p align="center">
+  <a href="https://youtu.be/Jxt7X63N10w">
+    <img src="https://img.youtube.com/vi/Jxt7X63N10w/maxresdefault.jpg" alt="Watch the video" width="640">
+  </a>
+</p>
 
 ---
 
