@@ -1,11 +1,17 @@
 # YYSRP English Fanslation Patch
 
-An English fan translation patch for **Yunyun Syndrome!? Rhythm Psychosis**, packaged as a one-click patcher.
+An English fan translation patch for **Yunyun Syndrome!? Rhythm Psychosis**, packaged as a one-click patcher. (click the thumbnail for a video guide)
 
 <p align="center">
   <a href="https://youtu.be/Jxt7X63N10w">
-    <img src="https://img.youtube.com/vi/Jxt7X63N10w/maxresdefault.jpg" alt="Watch the video" width="640">
+    <img src="https://img.youtube.com/vi/Jxt7X63N10w/maxresdefault.jpg" 
+         alt="Watch the YYSRP Fanslation Patch Preview" 
+         width="720" 
+         style="border-radius: 8px;">
   </a>
+</p>
+<p align="center">
+  <a href="https://youtu.be/Jxt7X63N10w">▶ Watch the patch preview on YouTube</a>
 </p>
 
 ---
