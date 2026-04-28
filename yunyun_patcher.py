@@ -14,8 +14,6 @@ Run order (all handled automatically):
 Dependencies: UnityPy  (pip install unitypy)
 Place alongside your strings.json and lang_strings.json.
 """
-# Auto-detection logic based on suggestion by 946923759
-# https://github.com/NickPlayzGITHUB/CrossPatch/blob/main/src/Config.py
 
 # ── Inline: smartformattag_patch ──────────────────────────────────────────────
 # Monkey-patch for UnityPy TypeTreeHelper to handle unknown ManagedReference
@@ -88,7 +86,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CONFIG_FILE = Path(sys.executable).parent / "yunyun_config.json"
+_BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+CONFIG_FILE = _BASE_DIR / "yunyun_config.json"
 
 def load_config():
     if CONFIG_FILE.exists():
@@ -191,11 +190,14 @@ DATA         = None
 LOG_PRIMARY   = Path(os.environ.get("APPDATA", "")).parent / "LocalLow/AllianceArts/Yunyun_Syndrome/Player.log"
 LOG_SECONDARY = Path(os.environ.get("TEMP", "")) / "AllianceArts/Yunyun_Syndrome/Player.log"
 
-STRINGS      = Path(r"C:\Users\jvnki\Documents\edits\strings.json")
-LANG_STRINGS = Path(r"C:\Users\jvnki\Documents\edits\lang_strings.json")
+# JSON files are expected alongside the exe
+_BASE_DIR    = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+STRINGS      = _BASE_DIR / "strings.json"
+LANG_STRINGS = _BASE_DIR / "lang_strings.json"
 
 BUNDLE_NAME   = "localization-string-tables-english(en)_assets_all.bundle"
 GAME_EXE_NAME = "Yunyun_Syndrome.exe"
+STEAM_URL     = f"steam://rungameid/{STEAM_APP_ID}"
 
 CRC_PATTERN   = re.compile(
     r"CRC Mismatch\. Provided ([0-9a-f]+), calculated ([0-9a-f]+) from data\.",
@@ -269,16 +271,8 @@ def kill_game():
 
 
 def launch_game() -> bool:
-    """Try exe first, fall back to steam:// URL. Returns True if launched."""
-    if GAME_EXE.exists():
-        print(f"  Launching via exe: {GAME_EXE}")
-        try:
-            subprocess.Popen([str(GAME_EXE)])
-            return True
-        except Exception as e:
-            print(f"  Exe launch failed: {e}")
-
-    print(f"  Falling back to Steam URL: {STEAM_URL}")
+    """Launch via Steam URL."""
+    print(f"  Launching via Steam: {STEAM_URL}")
     try:
         subprocess.Popen(["cmd", "/c", "start", "", STEAM_URL], shell=False)
         return True
@@ -456,31 +450,11 @@ def step_lang():
 
 # ── Step 3: CRC patch ─────────────────────────────────────────────────────────
 
-# The patched bundle always produces this CRC — hardcoded since it's deterministic.
-CRC_CACHE_FILE = Path(sys.executable).parent / "yunyun_crc.dat"
-
-def load_cached_crc():
-    if CRC_CACHE_FILE.exists():
-        try:
-            return int(CRC_CACHE_FILE.read_text().strip(), 16)
-        except Exception:
-            pass
-    return None
-
-def save_cached_crc(crc: int):
-    CRC_CACHE_FILE.write_text(hex(crc))
 
 def step_crc():
     print("\n=== Step 3: CRC catalog patch ===")
 
     log_path = find_log()
-
-    # Check if we have a cached CRC from a previous run
-    cached = load_cached_crc()
-    if cached:
-        print(f"  Using cached CRC: {hex(cached)}")
-        patch_catalog(cached)
-        return
 
     # No cache — need to launch the game to get the CRC
     if log_path.exists():
@@ -501,12 +475,10 @@ def step_crc():
     if result:
         provided, calculated = result
         print(f"\n  CRC captured — provided={hex(provided)} calculated={hex(calculated)}")
-        print("  Closing game...")
+        print("  Waiting 3 seconds before closing game...")
+        time.sleep(3)
         kill_game()
-        time.sleep(2)
         patch_catalog(calculated)
-        save_cached_crc(calculated)
-        print(f"  CRC saved to cache.")
     else:
         print("\n  Failed to capture CRC automatically.")
         print("  Launch the game manually, let it reach the title screen,")
