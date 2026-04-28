@@ -3,3 +3,7 @@ dist/
 __pycache__/
 *.pyc
 *.pyo
+lang_strings.json
+strings.json
+yunyun_config.json
+yunyun_crc.dat
