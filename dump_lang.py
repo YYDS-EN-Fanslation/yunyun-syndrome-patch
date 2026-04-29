@@ -7,10 +7,23 @@ import smartformattag_patch
 import UnityPy, json
 
 BASE = Path(__file__).parent
-DATA = Path(r"C:\Program Files (x86)\Steam\steamapps\common\Yunyun_Syndrome\Yunyun_Syndrome_Data\data.unity3d")
+GAME_DATA = Path(r"C:\Program Files (x86)\Steam\steamapps\common\Yunyun_Syndrome\Yunyun_Syndrome_Data")
+DATA_BAK  = GAME_DATA / "data.unity3d.bak"
+DATA_LIVE = GAME_DATA / "data.unity3d"
+DATA      = DATA_BAK if DATA_BAK.exists() else DATA_LIVE
+
+if DATA == DATA_BAK:
+    print("Dumping from data.unity3d.bak (vanilla)")
+else:
+    print("WARNING: No .bak found, dumping from live data.unity3d (may be patched)")
 OUT  = BASE / "lang_strings.json"
 
 env = UnityPy.load(str(DATA))
+
+print("=== CONTAINER MAP ===")
+for path, obj in env.container.items():
+    print(path)
+print("=== END CONTAINER MAP ===\n")
 
 files = []
 for obj in env.objects:
@@ -19,6 +32,9 @@ for obj in env.objects:
     data = obj.read()
     if not data.m_Name.endswith(".lang"):
         continue
+
+    print(f"{data.m_Name} -> {obj.container}")
+
     text = data.m_Script
     if isinstance(text, (bytes, bytearray)):
         text = text.decode("utf-8", errors="replace")
@@ -47,12 +63,15 @@ for obj in env.objects:
     while len(jp_lines) < len(en_lines):
         jp_lines.append("")
 
+    keys = parsed.get("Keys", [])
     files.append({
-        "path_id": obj.path_id,
-        "name":    data.m_Name,
-        "keys":    parsed.get("Keys", []),
-        "lines":   [
+        "path_id":   obj.path_id,
+        "container": obj.container,
+        "name":      data.m_Name,
+        "keys":      keys,
+        "lines":     [
             {
+                "key":        keys[i] if i < len(keys) else None,
                 "japanese":   jp_lines[i],
                 "original":   en_lines[i],
                 "translated": en_lines[i],

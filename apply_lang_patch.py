@@ -53,7 +53,11 @@ for obj in env.objects:
     if isinstance(text, (bytes, bytearray)):
         text = text.decode("utf-8", errors="replace")
 
-    if not text.lstrip().startswith("{"):
+    stripped = text.lstrip()
+    if not stripped:
+        print(f"  Skipping {name} (empty)")
+        continue
+    if not stripped.startswith("{"):
         print(f"  Skipping {name} (not JSON format)")
         continue
 
@@ -64,16 +68,34 @@ for obj in env.objects:
         print(f"  Context: {repr(text[max(0, e.pos-40):e.pos+40])}")
         continue
 
-    new_lines = [l["translated"] for l in entry["lines"]]
+    lines = entry["lines"]
+    has_keys = all(l.get("key") for l in lines)
+    bundle_keys = parsed.get("Keys", [])
 
-    bundle_lines = next(
-        (e["Lines"] for e in parsed.get("List", []) if e.get("Language", "").lower() == "en"),
-        []
+    bundle_en = next(
+        (e for e in parsed.get("List", []) if e.get("Language", "").lower() == "en"),
+        None
     )
-    if len(new_lines) != len(bundle_lines):
-        print(f"  SKIP {name}: line count mismatch — json={len(new_lines)} bundle={len(bundle_lines)}")
-        skipped_mismatch += 1
+    if bundle_en is None:
+        print(f"  No EN entry found in {name}, skipping")
         continue
+
+    bundle_lines = bundle_en.get("Lines", [])
+
+    if has_keys and bundle_keys:
+        key_to_translated = {l["key"]: l["translated"] for l in lines if l.get("key")}
+        new_lines = []
+        for i, bkey in enumerate(bundle_keys):
+            if bkey in key_to_translated:
+                new_lines.append(key_to_translated[bkey])
+            else:
+                new_lines.append(bundle_lines[i] if i < len(bundle_lines) else "")
+    else:
+        new_lines = [l["translated"] for l in lines]
+        if len(new_lines) != len(bundle_lines):
+            print(f"  SKIP {name}: line count mismatch — json={len(new_lines)} bundle={len(bundle_lines)}")
+            skipped_mismatch += 1
+            continue
 
     patched = False
     for lang_entry in parsed.get("List", []):
@@ -102,7 +124,7 @@ if not backup.exists():
     shutil.copy2(DATA, backup)
     print(f"Backed up to {backup.name}")
 
-patched_data = env.file.save()
+patched_data = env.file.save(packer="lz4")
 DATA.write_bytes(patched_data)
 print(f"Saved ({len(patched_data)} bytes)")
 print("\nDone. Launch the game.")

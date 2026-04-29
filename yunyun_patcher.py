@@ -423,7 +423,13 @@ def step_lang():
         if isinstance(text, (bytes, bytearray)):
             text = text.decode("utf-8", errors="replace")
 
-        text = re.sub(r'\\x[0-9a-fA-F]{2}', '?', text)
+        stripped = text.lstrip()
+        if not stripped:
+            print(f"  Skipping {file['name']} (empty)")
+            continue
+        if not stripped.startswith('{'):
+            print(f"  Skipping {file['name']} (not JSON format)")
+            continue
 
         try:
             parsed = json.loads(text)
@@ -432,7 +438,31 @@ def step_lang():
             print(f"  Context: {repr(text[e.pos-40:e.pos+40])}")
             continue
 
-        new_lines = [l["translated"] for l in file["lines"]]
+        lines = file["lines"]
+        has_keys = all(l.get("key") for l in lines)
+        bundle_keys = parsed.get("Keys", [])
+
+        bundle_en = next(
+            (e for e in parsed.get("List", []) if e.get("Language", "").lower() == "en"),
+            None
+        )
+        if bundle_en is None:
+            print(f"  No EN entry found in {file['name']}, skipping")
+            continue
+
+        bundle_lines = bundle_en.get("Lines", [])
+
+        if has_keys and bundle_keys:
+            key_to_translated = {l["key"]: l["translated"] for l in lines if l.get("key")}
+            new_lines = []
+            for i, bkey in enumerate(bundle_keys):
+                if bkey in key_to_translated:
+                    new_lines.append(key_to_translated[bkey])
+                else:
+                    new_lines.append(bundle_lines[i] if i < len(bundle_lines) else "")
+        else:
+            new_lines = [l["translated"] for l in lines]
+
         for entry in parsed["List"]:
             if entry.get("Language", "").lower() == "en":
                 entry["Lines"] = new_lines
@@ -444,7 +474,7 @@ def step_lang():
 
     print("  Saving data.unity3d...")
     backup(DATA)
-    patched = env.file.save()
+    patched = env.file.save(packer="lz4")
     DATA.write_bytes(patched)
     print(f"  Saved ({len(patched)} bytes)")
 
