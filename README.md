@@ -1,4 +1,4 @@
-# YYSRP English Fanslation Patch
+# Yun Yun Denpa Syndrome - English Fanslation Patch
 
 An English fan translation patch for **Yunyun Syndrome!? Rhythm Psychosis**, packaged as a one-click patcher.
 
