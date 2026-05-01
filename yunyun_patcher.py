@@ -195,6 +195,69 @@ _BASE_DIR    = Path(sys.executable).parent if getattr(sys, "frozen", False) else
 STRINGS      = _BASE_DIR / "strings.json"
 LANG_STRINGS = _BASE_DIR / "lang_strings.json"
 
+def _find_csv() -> Path | None:
+    """
+    Find a CSV patch file alongside the exe.
+    Picks the first *.csv found, preferring 50-yysrp.csv if present.
+    Returns None if no CSV exists.
+    """
+    preferred = _BASE_DIR / "50-yysrp.csv"
+    if preferred.exists():
+        return preferred
+    candidates = sorted(_BASE_DIR.glob("*.csv"))
+    return candidates[0] if candidates else None
+
+
+def _load_csv_patches(csv_path: Path, shared: dict[str, dict[str, int]]):
+    """
+    Parse a CSV in YunyunLocalePatcher format and resolve named keys to m_Id
+    using already-loaded SharedTableData.
+
+    Returns:
+        bundle_by_name : { table_name: { m_Id: text } }
+        lang_by_file   : { filename:   { en_index: text } }
+    """
+    import csv as _csv
+
+    bundle_by_name: dict[str, dict[int, str]] = {}
+    lang_by_file:   dict[str, dict[int, str]] = {}
+    unresolved = 0
+
+    with open(csv_path, encoding="utf-8", newline="") as fh:
+        reader = _csv.DictReader(fh)
+        for row in reader:
+            table = row.get("TableName", "").strip()
+            key   = row.get("Key",       "").strip()
+            text  = row.get("Text",      "")
+            if not table or not key:
+                continue
+
+            if table.endswith(".lang"):
+                parts = key.split("/", 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    lang_by_file.setdefault(table, {})[int(parts[1])] = text
+                else:
+                    print(f"  CSV WARNING: bad .lang key '{key}' — skipping")
+            else:
+                # Resolve named key → m_Id via SharedTableData
+                base = table.replace("_en", "").replace("_EN", "")
+                shared_map = next(
+                    (shared[c] for c in (table, base, base + "_en") if c in shared),
+                    None
+                )
+                if shared_map and key in shared_map:
+                    bundle_by_name.setdefault(table, {})[shared_map[key]] = text
+                else:
+                    unresolved += 1
+
+    total = sum(len(v) for v in bundle_by_name.values())
+    print(f"  CSV: {total} bundle entries across {len(bundle_by_name)} tables"
+          + (f", {unresolved} unresolved" if unresolved else ""))
+    if lang_by_file:
+        print(f"  CSV: {sum(len(v) for v in lang_by_file.values())} .lang lines"
+              f" across {len(lang_by_file)} files")
+    return bundle_by_name, lang_by_file
+
 BUNDLE_NAME   = "localization-string-tables-english(en)_assets_all.bundle"
 GAME_EXE_NAME = "Yunyun_Syndrome.exe"
 STEAM_URL     = f"steam://rungameid/{STEAM_APP_ID}"
@@ -309,32 +372,81 @@ def watch_log_for_crc(log_path: Path, timeout: int = 120):
 
 # ── Step 1: Patch localization string bundle ──────────────────────────────────
 
-def step_bundle():
-    print("\n=== Step 1: Patching localization string bundle ===")
+def step_bundle(dry_run: bool = False):
+    """
+    Patch the localization string bundle.
 
-    if not STRINGS.exists():
-        print(f"  strings.json not found at {STRINGS} — skipping.")
-        return False
+    Matching strategy: m_Id keyed (not positional).
+    m_Id is a deterministic hash of the key string — stable across patches
+    as long as entries aren't renamed. New entries added by the devs are
+    simply skipped (no translation = no patch), so insertions never shift
+    existing translations onto the wrong entries.
 
-    with open(STRINGS, encoding="utf-8") as f:
-        tables = json.load(f)
+    Also ingests pending_edits.json from YunDebugMenu if present, merging
+    in-game edits on top of strings.json translations.
+    """
+    print("\n[ Step 1/3 ] String bundle")
+    print("-" * 40)
 
-    by_name = {}
+    # ── Build m_Id → translated map from strings.json ──
+    by_name: dict[str, dict[int, str]] = {}  # table_name -> {m_Id: translated}
     changed = 0
-    for table in tables:
-        diffs = sum(1 for e in table["entries"] if e["translated"] != e["original"])
-        if diffs:
-            by_name[table["name"]] = [e["translated"] for e in table["entries"]]
-            changed += diffs
 
-    print(f"  {changed} changed strings across {len(tables)} tables")
-    if changed == 0:
-        print("  No changes — skipping bundle patch.")
-        return False
+    if STRINGS.exists():
+        with open(STRINGS, encoding="utf-8") as f:
+            tables = json.load(f)
+        for table in tables:
+            id_map = {}
+            for e in table["entries"]:
+                if e["translated"] != e["original"]:
+                    id_map[int(e["m_Id"])] = e["translated"]
+                    changed += 1
+            if id_map:
+                by_name[table["name"]] = id_map
+        print(f"  strings.json   : {changed} changed entries across {len(by_name)} tables")
+    else:
+        print(f"  strings.json   : not found — skipping")
 
-    print("  Loading bundle...")
+    # ── Merge CSV patch (overrides strings.json on conflict) ──
+    # Override order: strings.json < CSV < pending_edits.json
+    # Each layer overwrites the previous for any shared keys.
+    csv_path = _find_csv()
+    csv_lang_patches: dict[str, dict[int, str]] = {}
+    if csv_path:
+        print(f"  CSV patch      : {csv_path.name} (resolving keys...)")
+        shared = _load_shared_table_data()
+        csv_bundle, csv_lang_patches = _load_csv_patches(csv_path, shared)
+        for table_name, id_map in csv_bundle.items():
+            by_name.setdefault(table_name, {}).update(id_map)
+    else:
+        print(f"  CSV patch      : none found")
+        csv_lang_patches = {}
+
+    # ── Merge pending_edits.json from YunDebugMenu (highest priority) ──
+    # Format: { "table::entry_key": { "table": str, "entry": str, "value": str } }
+    # These are in-game edits exported from YunDebugMenu. They override both
+    # strings.json and any CSV patch for any shared keys.
+    pending_path = _BASE_DIR / "pending_edits.json"
+    if pending_path.exists():
+        print(f"  pending_edits  : found — merging in-game edits (highest priority)")
+        try:
+            with open(pending_path, encoding="utf-8") as f:
+                pending = json.load(f)
+            _merge_pending_edits(pending, by_name)
+        except Exception as e:
+            print(f"  pending_edits  : WARNING — could not load: {e}")
+    else:
+        print(f"  pending_edits  : none found")
+
+    if not by_name:
+        print("\n  Nothing to patch — no changes detected in any source.")
+        return False, csv_lang_patches
+
+    # ── Apply to bundle ──
+    print(f"\n  Applying to bundle...")
     env = UnityPy.load(str(BUNDLE))
     patched_count = 0
+    total_patched = 0
 
     for obj in env.objects:
         if obj.type.name != "MonoBehaviour":
@@ -346,28 +458,116 @@ def step_bundle():
         if table_name not in by_name:
             continue
 
-        translated_list = by_name[table_name]
-        sorted_entries  = sorted(d["m_TableData"], key=lambda e: e["m_Id"])
-        n_bundle        = len(sorted_entries)
-        n_json          = len(translated_list)
+        id_map = by_name[table_name]
+        patched = 0
 
-        if n_json != n_bundle:
-            print(f"  {table_name}: json={n_json} bundle={n_bundle} — truncating to {n_bundle}")
-            translated_list = translated_list[:n_bundle]
-
-        for entry, translated in zip(sorted_entries, translated_list):
-            entry["m_Localized"] = translated
+        for entry in d["m_TableData"]:
+            mid = int(entry["m_Id"])
+            if mid in id_map:
+                entry["m_Localized"] = id_map[mid]
+                patched += 1
 
         obj.save_typetree(d)
         patched_count += 1
-        print(f"  Patched: {table_name} ({n_bundle} entries)")
+        total_patched += patched
+        print(f"    {table_name}: {patched} strings")
 
-    print(f"  Saving bundle ({patched_count} tables patched)...")
-    backup(BUNDLE)
-    patched_data = env.file.save()
-    BUNDLE.write_bytes(patched_data)
-    print(f"  Bundle saved ({len(patched_data)} bytes)")
-    return True
+    if dry_run:
+        print(f"\n  [DRY RUN] Would patch {patched_count} tables, {total_patched} strings. Nothing written.")
+    else:
+        backup(BUNDLE)
+        patched_data = env.file.save()
+        BUNDLE.write_bytes(patched_data)
+        print(f"\n  Saved {patched_count} tables, {total_patched} strings total.")
+    return True, csv_lang_patches
+
+
+def _load_shared_table_data() -> dict[str, dict[str, int]]:
+    """
+    Load SharedTableData from the shared assets bundle.
+    Returns: { table_collection_name: { key_string: m_Id } }
+    Used to resolve pending_edits.json key strings to m_Id values.
+    """
+    shared_bundle = BUNDLE.parent / "localization-assets-shared_assets_all.bundle"
+    if not shared_bundle.exists():
+        print(f"  WARNING: Shared bundle not found at {shared_bundle.name}")
+        return {}
+
+    result = {}
+    try:
+        env = UnityPy.load(str(shared_bundle))
+        for obj in env.objects:
+            if obj.type.name != "MonoBehaviour":
+                continue
+            d = obj.read_typetree()
+            if "m_Entries" not in d:
+                continue
+            # SharedTableData — m_TableCollectionName links to the StringTable name
+            collection = d.get("m_TableCollectionName", "")
+            key_to_id = {}
+            for e in d["m_Entries"]:
+                key = e.get("m_Key", "")
+                mid = int(e.get("m_Id", 0))
+                if key and mid:
+                    key_to_id[key] = mid
+            if key_to_id:
+                result[collection] = key_to_id
+    except Exception as ex:
+        print(f"  WARNING: Could not load SharedTableData: {ex}")
+
+    return result
+
+
+def _merge_pending_edits(pending: dict, by_name: dict[str, dict[int, str]]):
+    """
+    Merge pending_edits.json (from YunDebugMenu export) into the by_name map.
+    pending format: { "table::entry": { "table": str, "entry": str, "value": str } }
+    Requires SharedTableData to resolve entry key -> m_Id.
+    """
+    shared = _load_shared_table_data()
+    if not shared:
+        print("  WARNING: Cannot merge pending_edits — SharedTableData unavailable")
+        return
+
+    merged = 0
+    missed = 0
+    for composite_key, edit in pending.items():
+        table = edit.get("table", "")
+        entry = edit.get("entry", "")
+        value = edit.get("value", "")
+        if not all([table, entry, value]):
+            continue
+
+        # StringTable name in bundle is like "Text_en", shared collection is "Text"
+        # Try both with and without the _en suffix
+        candidates = [table, table + "_en", table.rstrip("_en")]
+        mid = None
+        for candidate in candidates:
+            if candidate in shared and entry in shared[candidate]:
+                mid = shared[candidate][entry]
+                break
+
+        if mid is None:
+            print(f"  pending_edits: could not resolve {table}::{entry} to m_Id — skipping")
+            missed += 1
+            continue
+
+        # Find the matching bundle table name
+        bundle_table = None
+        for name in by_name:
+            base = name.replace("_en", "").replace("_EN", "")
+            if base == table or name == table or name == table + "_en":
+                bundle_table = name
+                break
+        if bundle_table is None:
+            # Create new entry in by_name for this table
+            bundle_table = table + "_en" if (table + "_en") in by_name else table
+            by_name.setdefault(bundle_table, {})
+
+        by_name[bundle_table][mid] = value
+        merged += 1
+
+    print(f"  pending_edits  : merged {merged} edits ({missed} unresolved)")
 
 # ── Step 2: Patch data.unity3d language lines ─────────────────────────────────
 
@@ -379,153 +579,177 @@ def pid_variants(pid):
         yield pid - (1 << 64)
 
 
-def step_lang():
-    print("\n=== Step 2: Patching data.unity3d language lines ===")
+def step_lang(csv_lang_patches: dict | None = None, dry_run: bool = False):
+    print("\n[ Step 2/3 ] Language files (.lang)")
+    print("-" * 40)
 
-    if not LANG_STRINGS.exists():
-        print(f"  lang_strings.json not found at {LANG_STRINGS} — skipping.")
+    # Build translations map from lang_strings.json (path_id keyed)
+    translations = {}  # path_id → file entry
+    if LANG_STRINGS.exists():
+        with open(LANG_STRINGS, encoding="utf-8") as f:
+            files = json.load(f)
+        for file in files:
+            for v in pid_variants(file["path_id"]):
+                translations[v] = file
+        changed = sum(
+            1 for file in files
+            for line in file["lines"]
+            if line["translated"] != line["original"]
+        )
+        print(f"  lang_strings.json : {changed} changed lines across {len(files)} files")
+    else:
+        print(f"  lang_strings.json : not found — skipping")
+
+    # CSV lang patches are name-keyed (filename → {index: text})
+    csv_lang_patches = csv_lang_patches or {}
+    if csv_lang_patches:
+        print(f"  CSV .lang         : {sum(len(v) for v in csv_lang_patches.values())} lines"
+              f" across {len(csv_lang_patches)} files")
+
+    if not translations and not csv_lang_patches:
+        print("  Nothing to patch.")
         return
 
-    with open(LANG_STRINGS, encoding="utf-8") as f:
-        files = json.load(f)
-
-    translations = {}
-    for file in files:
-        for v in pid_variants(file["path_id"]):
-            translations[v] = file
-
-    changed = sum(
-        1 for file in files
-        for line in file["lines"]
-        if line["translated"] != line["original"]
-    )
-    print(f"  {changed} changed lines across {len(files)} files")
-    if changed == 0:
-        print("  No changes — skipping lang patch.")
-        return
-
-    print("  Loading data.unity3d (this may take a moment)...")
+    print(f"\n  Loading data.unity3d (this may take a moment)...")
     env = UnityPy.load(str(DATA))
 
     for obj in env.objects:
         if obj.type.name != "TextAsset":
             continue
-        pid = obj.path_id
-        if pid not in translations:
-            continue
-
-        file = translations[pid]
-        if not any(l["translated"] != l["original"] for l in file["lines"]):
-            continue
 
         raw  = obj.read()
+        name = raw.m_Name
+        pid  = obj.path_id
+
+        in_json = pid in translations
+        in_csv  = name in csv_lang_patches
+        if not in_json and not in_csv:
+            continue
+
+        file = translations.get(pid)
+        if file and not any(l["translated"] != l["original"] for l in file["lines"]) and not in_csv:
+            continue
+
         text = raw.m_Script
         if isinstance(text, (bytes, bytearray)):
             text = text.decode("utf-8", errors="replace")
 
         stripped = text.lstrip()
         if not stripped:
-            print(f"  Skipping {file['name']} (empty)")
             continue
         if not stripped.startswith('{'):
-            print(f"  Skipping {file['name']} (not JSON format)")
             continue
 
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError as e:
-            print(f"  JSON error in {file['name']}: {e}")
+            print(f"  JSON error in {name}: {e}")
             print(f"  Context: {repr(text[e.pos-40:e.pos+40])}")
             continue
-
-        lines = file["lines"]
-        has_keys = all(l.get("key") for l in lines)
-        bundle_keys = parsed.get("Keys", [])
 
         bundle_en = next(
             (e for e in parsed.get("List", []) if e.get("Language", "").lower() == "en"),
             None
         )
         if bundle_en is None:
-            print(f"  No EN entry found in {file['name']}, skipping")
+            print(f"  No EN entry in {name} — skipping")
             continue
 
-        bundle_lines = bundle_en.get("Lines", [])
+        bundle_lines = list(bundle_en.get("Lines", []))
+        bundle_keys  = parsed.get("Keys", [])
 
-        if has_keys and bundle_keys:
-            key_to_translated = {l["key"]: l["translated"] for l in lines if l.get("key")}
-            new_lines = []
-            for i, bkey in enumerate(bundle_keys):
-                if bkey in key_to_translated:
-                    new_lines.append(key_to_translated[bkey])
-                else:
-                    new_lines.append(bundle_lines[i] if i < len(bundle_lines) else "")
-        else:
-            new_lines = [l["translated"] for l in lines]
+        # Apply lang_strings.json translations first
+        if file:
+            lines     = file["lines"]
+            has_keys  = all(l.get("key") for l in lines)
+            if has_keys and bundle_keys:
+                key_to_translated = {l["key"]: l["translated"] for l in lines if l.get("key")}
+                for i, bkey in enumerate(bundle_keys):
+                    if bkey in key_to_translated:
+                        if i < len(bundle_lines):
+                            bundle_lines[i] = key_to_translated[bkey]
+            else:
+                for i, l in enumerate(lines):
+                    if i < len(bundle_lines) and l["translated"] != l["original"]:
+                        bundle_lines[i] = l["translated"]
 
-        for entry in parsed["List"]:
-            if entry.get("Language", "").lower() == "en":
-                entry["Lines"] = new_lines
-                break
+        # Apply CSV patches on top (CSV wins on conflict)
+        if in_csv:
+            for idx, translated in csv_lang_patches[name].items():
+                if idx < len(bundle_lines):
+                    bundle_lines[idx] = translated
 
-        raw.m_Script = json.dumps(parsed, ensure_ascii=False, indent=4)
-        raw.save()
-        print(f"  Patched: {file['name']}")
+        bundle_en["Lines"] = bundle_lines
+        if not dry_run:
+            raw.m_Script = json.dumps(parsed, ensure_ascii=False, indent=4)
+            raw.save()
+        print(f"    {name}")
 
-    print("  Saving data.unity3d...")
-    backup(DATA)
-    patched = env.file.save(packer="lz4")
-    DATA.write_bytes(patched)
-    print(f"  Saved ({len(patched)} bytes)")
+    if dry_run:
+        print(f"\n  [DRY RUN] Would patch .lang files above. Nothing written.")
+    else:
+        print(f"\n  Saving data.unity3d...")
+        backup(DATA)
+        patched = env.file.save(packer="lz4")
+        DATA.write_bytes(patched)
+        print(f"  Saved.")
 
 # ── Step 3: CRC patch ─────────────────────────────────────────────────────────
 
 
 def step_crc():
-    print("\n=== Step 3: CRC catalog patch ===")
+    print("\n[ Step 3/3 ] CRC patch")
+    print("-" * 40)
 
     log_path = find_log()
 
-    # No cache — need to launch the game to get the CRC
     if log_path.exists():
         try:
             log_path.unlink()
         except OSError:
             pass
 
-    print("  Launching game to capture CRC...")
+    print("  Launching game to capture CRC mismatch...")
     if not launch_game():
-        print("  Could not launch game. Patch catalog.bin manually.")
+        print("  ERROR: Could not launch game. Patch catalog.bin manually.")
         return
 
-    print("  Waiting for CRC mismatch (up to 120 seconds)...")
-    print("  The game will be closed automatically once the CRC is captured.")
-    result = watch_log_for_crc(log_path, timeout=120)
+    print("  Waiting up to 30 seconds — game will close automatically once captured.")
+    result = watch_log_for_crc(log_path, timeout=30)
 
     if result:
         provided, calculated = result
-        print(f"\n  CRC captured — provided={hex(provided)} calculated={hex(calculated)}")
-        print("  Waiting 3 seconds before closing game...")
+        print(f"  CRC captured. Closing game in 3 seconds...")
         time.sleep(3)
         kill_game()
         patch_catalog(calculated)
     else:
-        print("\n  Failed to capture CRC automatically.")
-        print("  Launch the game manually, let it reach the title screen,")
-        print("  then run the patcher again.")
+        print("  CRC not detected in time.")
+        print("  Launch the game manually to the title screen, then run the patcher again.")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("=" * 60)
+    import argparse
+    parser = argparse.ArgumentParser(description="Yunyun Syndrome Translation Patcher")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be patched without writing any files."
+    )
+    args = parser.parse_args()
+    DRY_RUN = args.dry_run
+
+    print("=" * 40)
     print("  Yunyun Syndrome Translation Patcher")
-    print("=" * 60)
+    if DRY_RUN:
+        print("  *** DRY RUN — no files will be modified ***")
+    print("=" * 40)
 
     try:
         import psutil
     except ImportError:
-        print("\nERROR: psutil is required for process management.")
-        print("Install it with:  pip install psutil")
+        print("\nERROR: psutil is not installed.")
+        print("Run:  pip install psutil")
         sys.exit(1)
 
     GAME_DIR = get_game_dir()
@@ -533,12 +757,21 @@ if __name__ == "__main__":
     BUNDLE   = GAME_DIR / "Yunyun_Syndrome_Data/StreamingAssets/aa/StandaloneWindows64/localization-string-tables-english(en)_assets_all.bundle"
     CATALOG  = GAME_DIR / "Yunyun_Syndrome_Data/StreamingAssets/aa/catalog.bin"
     DATA     = GAME_DIR / "Yunyun_Syndrome_Data/data.unity3d"
-    print(f"  Game dir: {GAME_DIR}")
+    print(f"  Game : {GAME_DIR}")
+    print()
 
-    step_bundle()
-    step_lang()
-    step_crc()
+    _, csv_lang_patches = step_bundle(dry_run=DRY_RUN)
+    step_lang(csv_lang_patches, dry_run=DRY_RUN)
+    if not DRY_RUN:
+        step_crc()
+    else:
+        print("\n[ Step 3/3 ] CRC patch")
+        print("-" * 40)
+        print("  Skipped in dry-run mode.")
 
-    print("\n" + "=" * 60)
-    print("  All done. Launch the game.")
-    print("=" * 60)
+    print("\n" + "=" * 40)
+    if DRY_RUN:
+        print("  Dry run complete. No files were modified.")
+    else:
+        print("  Done! Launch the game.")
+    print("=" * 40)

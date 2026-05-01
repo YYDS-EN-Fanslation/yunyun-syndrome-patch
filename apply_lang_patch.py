@@ -113,9 +113,11 @@ for obj in env.objects:
     patched_count += 1
     print(f"  Patched: {name} ({len(new_lines)} lines)")
 
-print(f"\nPatched {patched_count} files.")
-if skipped_mismatch:
-    print(f"Skipped {skipped_mismatch} files due to line count mismatch — check your dump.")
+    for pf in env.files.values():
+    patched = pf.save(packer="lz4")
+    DATA.write_bytes(patched)
+        print(f"Saved ({len(patched)} bytes)")
+        print("\nDone. Launch the game.")
 
 # ── Save ──────────────────────────────────────────────────────────────────────
 print("Saving data.unity3d...")
@@ -124,7 +126,9 @@ if not backup.exists():
     shutil.copy2(DATA, backup)
     print(f"Backed up to {backup.name}")
 
-patched_data = env.file.save(packer="lz4")
-DATA.write_bytes(patched_data)
-print(f"Saved ({len(patched_data)} bytes)")
+for pf in env.files.values():
+    patched = pf.save(packer="lz4")
+    DATA.write_bytes(patched)
+
+print(f"Saved ({len(patched)} bytes)")
 print("\nDone. Launch the game.")
