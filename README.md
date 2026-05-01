@@ -1,58 +1,155 @@
-# YunYun Denpa Syndrome - English Fanslation Patch (FIX ME IN A
+# yunyun-syndrome-patch
 
-An English fan translation patch for **Yunyun Syndrome!? Rhythm Psychosis**, packaged as a one-click patcher.
+Translation patcher for *Yunyun Denpa Syndrome*. Writes translations directly into the game's asset files, no runtime mod required.
 
-<p align="center">
-  <a href="https://youtu.be/Jxt7X63N10w">
-    <img src="https://img.youtube.com/vi/Jxt7X63N10w/maxresdefault.jpg" 
-         alt="Watch the YYSRP Fanslation Patch Preview" 
-         width="720" 
-         style="border-radius: 8px;">
-  </a>
-</p>
-<p align="center">
-  <a href="https://youtu.be/Jxt7X63N10w">▶ Watch the Installation Guide on YouTube</a>
-</p>
+Part of the [YYDS EN Fanslation Project](https://github.com/YYDS-EN-Fanslation).
 
 ---
 
-## Screenshots
+## Which should I use?
 
-<img width="3840" height="1400" alt="AI_02" src="https://github.com/user-attachments/assets/7da34a9f-bbc4-4316-ac30-cfcafdde565a" />
-<img width="3840" height="1400" alt="AI_03" src="https://github.com/user-attachments/assets/a87712cc-ae0a-46a3-a929-abd1aba5e02d" />
-<img width="3840" height="1400" alt="AI_04" src="https://github.com/user-attachments/assets/cd709a01-6a2c-42b5-91f2-f7de2711caac" />
-<img width="3840" height="1400" alt="RCC_02" src="https://github.com/user-attachments/assets/baf73851-e890-4e9f-ace9-fab98fbec33c" />
-<img width="3840" height="1400" alt="Revloution_02" src="https://github.com/user-attachments/assets/9922efe8-bb18-4b6c-8f4e-c27d3f8003af" />
+**This patcher** writes translations into your game files. Once patched, the translation works without MelonLoader or any other mod. If the game updates you'll need to repatch.
+
+**[yunyun-syndrome-mod](https://github.com/YYDS-EN-Fanslation/yunyun-syndrome-mod)** applies translations at runtime via MelonLoader without touching your game files. Easier to update, easier to remove.
 
 ---
 
-## Installation
+## What it patches
 
-1. Download `yunyun_patcher.exe` from the [Releases](../../releases) page
-2. Place it anywhere on your PC
-3. Run it — on first launch it will ask you to select your Yunyun Syndrome install folder
-4. The patcher will do the rest automatically
+**String tables** cover UI text, social feed posts, wiki entries and everything that is not dialogue. These are stored in Addressables bundles.
 
-> **After a Steam verify/file integrity check**, just run the patcher again. It will re-apply the patch automatically.
+**.lang files** contain story dialogue and scene text. JSON TextAssets stored inside `data.unity3d`.
+
+After patching the string bundle the game's `catalog.bin` needs a new CRC or it won't load. The patcher handles this by briefly launching the game, reading the mismatch out of `Player.log`, and writing the fix.
 
 ---
 
-## Requirements
+## Usage
 
-- Yunyun Syndrome installed via Steam
-- Windows
+Download the latest release, extract it, and run `yunyun_patcher.exe`. The game path is detected automatically via the Steam registry. If that fails a folder picker opens and the path gets saved to `yunyun_config.json` for next time.
+
+The exe expects `strings.json` and/or `lang_strings.json` to be in the same folder. These are included in the release. It patches the bundle, patches the lang files, launches the game briefly to capture the CRC, then closes it. Launch the game normally after it finishes.
+
+### CSV patches
+
+Drop a CSV patch in YunyunLocalePatcher format (`TableName,Key,Text`) next to the exe as `50-yysrp.csv` and it gets picked up automatically. Priority order when all sources are present: `strings.json` then CSV then `pending_edits.json`. Later sources win on conflict.
+
+### After a game update
+
+Restore your backups first:
+
+```
+data.unity3d.bak  →  data.unity3d
+*.bundle.bak      →  bundle file
+catalog.bin.bak   →  catalog.bin
+```
+
+Then run the exe again. The patcher will reapply everything.
+
+---
+
+## For contributors
+
+The standalone scripts are for generating fresh translation files after a game update. Requires Python 3.10+ and `pip install unitypy psutil`.
+
+```
+python dump_strings.py   # produces strings.json
+python dump_lang.py      # produces lang_strings.json
+```
+
+Edit the `"translated"` fields in the output files, then run the exe.
+
+Dump from vanilla game files. `dump_lang.py` uses `data.unity3d.bak` automatically if it exists. If you've already patched and have no backup, restore it before dumping or the diff will be wrong.
+
+---
+
+## Files
+
+| File | What it does |
+|---|---|
+| `yunyun_patcher.py` | Source for the exe |
+| `dump_strings.py` | Dumps string tables to `strings.json` |
+| `dump_lang.py` | Dumps `.lang` files to `lang_strings.json` |
+| `apply_patch.py` | Standalone string table patcher |
+| `apply_lang_patch.py` | Standalone `.lang` patcher |
+| `apply_csv_patch.py` | Applies a CSV patch in YunyunLocalePatcher format |
+| `smartformattag_patch.py` | UnityPy compatibility fix, needed by the standalone scripts |
+
+---
+
+## Translation file formats
+
+### strings.json
+
+```json
+[
+  {
+    "path_id": 123456,
+    "name": "Text_en",
+    "entries": [
+      {
+        "m_Id": 4503599694085120,
+        "japanese": "日本語テキスト",
+        "original": "Original English",
+        "translated": "Your translation here"
+      }
+    ]
+  }
+]
+```
+
+Only edit `"translated"`. The `"original"` field is how changes are detected.
+
+### lang_strings.json
+
+```json
+[
+  {
+    "path_id": 789,
+    "name": "story_ch1.lang",
+    "keys": ["0x1a2b", "0x3c4d"],
+    "lines": [
+      {
+        "key": "0x1a2b",
+        "japanese": "日本語テキスト",
+        "original": "Original English",
+        "translated": "Your translation here"
+      }
+    ]
+  }
+]
+```
+
+### pending_edits.json
+
+Exported by [YunDebugMenu](https://github.com/YYDS-EN-Fanslation/yunyun-syndrome-debugmenu). If it's next to the exe the patcher merges it in automatically.
+
+```json
+{
+  "TableName::EntryKey": {
+    "table": "TableName",
+    "entry": "EntryKey",
+    "value": "Translated text"
+  }
+}
+```
 
 ---
 
 ## Notes
 
-- The patcher creates `.bak` backup files of the original game files the first time it runs — these are safe to keep
-- If you move your Steam library, delete `yunyun_config.json` next to the exe and it will ask for the new location on next run
-- This patch is fan-made and unaffiliated with AllianceArts
+The CRC step launches the game and waits up to 30 seconds for the mismatch to appear in `Player.log`, then closes the game automatically. If it times out, launch the game manually to the title screen and run the exe again.
+
+Backups are created once and never overwritten. That's intentional.
+
+Windows only.
 
 ---
 
-## Credits
+## Looking for something else?
 
-- **Translation & Patching:** Radish
-- **YYSRP EN Fanslation** community
+- [yunyun-syndrome-mod](https://github.com/YYDS-EN-Fanslation/yunyun-syndrome-mod) (runtime mod, no file modification)
+- [yunyun-syndrome-translation](https://github.com/YYDS-EN-Fanslation/yunyun-syndrome-translation) (translation files)
+- [yunyun-syndrome-debugmenu](https://github.com/YYDS-EN-Fanslation/yunyun-syndrome-debugmenu) (in-game editor)
+- [YYDS EN Fanslation](https://github.com/YYDS-EN-Fanslation) (org overview)
+- [Discord](https://discord.gg/jYjTd5qpKv)
