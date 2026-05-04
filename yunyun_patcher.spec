@@ -14,7 +14,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['fmod_toolkit', 'pyfmodex', 'UnityPy.export.AudioClipConverter', 'astc_encoder', 'archspec'],
     noarchive=False,
     optimize=0,
 )
