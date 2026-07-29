@@ -1,5 +1,3 @@
-name: Build & Release Patcher
-
 on:
   workflow_dispatch:
     inputs:
@@ -9,6 +7,9 @@ on:
   push:
     tags:
       - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   build-and-release:
