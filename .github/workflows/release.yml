@@ -1,0 +1,81 @@
+name: Build & Release Patcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. v1.06.0)"
+        required: true
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out patcher repo
+        uses: actions/checkout@v4
+        with:
+          path: patcher
+
+      - name: Check out translation repo
+        uses: actions/checkout@v4
+        with:
+          repository: YYDS-EN-Fanslation/yunyun-syndrome-translation
+          path: translation
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: patcher
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build exe with PyInstaller
+        working-directory: patcher
+        run: pyinstaller yunyun_patcher.spec
+
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assemble release folder
+        shell: bash
+        run: |
+          mkdir -p release/Patches release/ImagePatches
+
+          # Freshly built exe
+          cp patcher/dist/yunyun_patcher.exe release/
+
+          # Latest curated translation CSV, straight from the translation repo
+          cp "translation/YYDS EN Fanslation - Patch.csv" release/Patches/
+
+          # Dump-generated JSON + image patches, committed in the patcher
+          # repo under release-assets/ (see repo layout note in README)
+          cp patcher/release-assets/Patches/strings.json      release/Patches/
+          cp patcher/release-assets/Patches/lang_strings.json release/Patches/
+          cp patcher/release-assets/ImagePatches/*            release/ImagePatches/
+
+          cd release
+          7z a "../YYSRP-${{ steps.ver.outputs.version }}.zip" .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: "YYSRP ${{ steps.ver.outputs.version }}"
+          files: YYSRP-${{ steps.ver.outputs.version }}.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
